@@ -54,7 +54,7 @@ const MEALS=[{id:'pdj',n:'Petit-déj',e:'☕'},{id:'dej',n:'Déjeuner',e:'🥗'}
 const MEAL=Object.fromEntries(MEALS.map(m=>[m.id,m]));
 const ACTIVITY=[{n:'Sédentaire',d:'Bureau, peu de marche',f:1.2},{n:'Légère',d:'Marche ou sport 1 à 3 fois par semaine',f:1.375},{n:'Modérée',d:'Sport 3 à 5 fois par semaine',f:1.55},{n:'Active',d:'Sport 6 à 7 fois par semaine',f:1.725},{n:'Très active',d:'Métier physique ou entraînement intense',f:1.9}];
 const PACE=[{n:'Doux',pct:.10},{n:'Normal',pct:.17},{n:'Soutenu',pct:.25}];
-const SPORTS=[['🚶','Marche',3.5],['🚶‍♀️','Marche rapide',4.3],['🏃','Course',9.8],['🚴','Vélo',7.5],['🏊','Natation',7],['🏋️','Musculation',5],['🧘','Yoga',2.5],['💃','Danse',5],['🧹','Ménage',3.3],['🌿','Jardinage',4]];
+const SPORTS=[['🚶','Marche',3.5],['🚶‍♀️','Marche rapide',4.3],['🏃','Course',9.8],['🚴','Vélo',7.5],['🏊','Natation',7],['🏋️','Musculation',5],['🧘','Yoga',2.5],['🤸','Lagree',6.5],['💃','Danse',5],['🧹','Ménage',3.3],['🌿','Jardinage',4]];
 const PHRASES={
  '😊':['Bravo, tu peux être fier·e de toi 🌟','Bien joué, un repas qui fait du bien 💪','Super choix, continue comme ça ✨'],
  '😐':['Un repas comme un autre, et c\'est très bien 🙂','Pas de jugement ici, on avance 🌱','Chaque repas noté, c\'est déjà gagné 👍'],
