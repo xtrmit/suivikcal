@@ -842,14 +842,24 @@ async function startAccess(lien) {
 
 /* ================== Sauvegarde ================== */
 async function exportData() {
-  const name = 'suivikcal-' + (ENV === 'prod' ? '' : ENV + '-') + today() + '.json';
-  const blob = new Blob([JSON.stringify(Object.assign({ app: 'SuiviKcal', version: VERSION, exporte: new Date().toISOString() }, D), null, 1)], { type: 'application/json' });
+  /* Partage d'un fichier texte (accepté par Android et iPhone ; le .json est refusé par le partage),
+     sinon téléchargement, sinon affichage du contenu à copier. */
+  const base = 'suivikcal-' + (ENV === 'prod' ? '' : ENV + '-') + 'sauvegarde-' + today();
+  const texte = JSON.stringify(Object.assign({ app: 'SuiviKcal', version: VERSION, exporte: new Date().toISOString() }, D), null, 1);
+  const fait = () => { D.lastBackup = today(); save(); if (U.tab === 'profile') render(); toast('Sauvegarde prête 💾'); };
+  let file = null; try { file = new File([texte], base + '.txt', { type: 'text/plain' }); } catch (e) {}
+  if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'Sauvegarde SuiviKcal' }); fait(); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; }
+  }
   try {
-    const file = new File([blob], name, { type: 'application/json' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Sauvegarde SuiviKcal' }); }
-    else { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); }
-    D.lastBackup = today(); save(); if (U.tab === 'profile') render(); toast('Sauvegarde prête 💾');
-  } catch (e) { if (e && e.name !== 'AbortError') toast('Export impossible sur ce téléphone'); }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([texte], { type: 'application/json' })); a.download = base + '.json';
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); fait(); return;
+  } catch (e) {}
+  openSheet('Sauvegarde', `<p class="note">Copie ce texte et colle-le dans une note ou un e-mail. Pour le réimporter, enregistre-le dans un fichier.</p>
+    <textarea class="input" style="min-height:160px;font-size:.7em" readonly>${esc(texte)}</textarea><button class="primary" id="cp">Copier</button>`, root => {
+    root.querySelector('#cp').onclick = async () => { try { await navigator.clipboard.writeText(texte); closeSheet(); fait(); } catch (e) { root.querySelector('textarea').select(); toast('Sélectionne tout et copie'); } };
+  });
 }
 $('#importFile').onchange = e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
