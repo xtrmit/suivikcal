@@ -234,6 +234,18 @@ function pastille(cx, yb, v) {
   return `<g class="pill"><rect x="${cx - w / 2}" y="${yb - 13}" width="${w}" height="14" rx="7" fill="var(--sage)"/><text x="${cx}" y="${yb - 3}" text-anchor="middle" style="fill:#fff;font-weight:800">${t}</text></g>`;
 }
 
+/* Budget à la semaine (affichage) : objectif × 7 + sport de la semaine, moins ce qui a été mangé. */
+function budgetSemaine(s, T) {
+  const budget = s.g * 7 + s.days.reduce((a, x) => a + x.brule, 0), mange = s.days.reduce((a, x) => a + x.ate, 0), reste = budget - mange;
+  const restants = s.days.filter(x => x.d >= T).length, enCours = restants > 0 && s.days[0].d <= T;
+  let txt;
+  if (!restants) txt = reste >= 0 ? `Semaine terminée avec <b class="num">${fmt(reste)} kcal</b> d'avance 👏` : `Semaine terminée <b class="num">${fmt(-reste)} kcal</b> au-delà du budget. La suivante repart de zéro.`;
+  else if (reste >= 0) txt = `Il reste <b class="num">${fmt(reste)} kcal</b>${enCours ? `, soit environ ${fmt(reste / restants)} kcal par jour pour ${restants === 1 ? 'aujourd\'hui' : 'les ' + restants + ' jours restants'}` : ''}. Un jour un peu plus copieux se compense sur les autres.`;
+  else txt = `Budget de la semaine dépassé de <b class="num">${fmt(-reste)} kcal</b>. Pas de panique, la semaine prochaine repart de zéro.`;
+  return `<div class="wbudget"><div class="row" style="justify-content:space-between"><span class="label">Budget de la semaine</span><span class="num">${fmt(mange)} / ${fmt(budget)} kcal</span></div>
+    <div class="bar"><i style="width:${Math.min(100, mange / budget * 100)}%"></i></div><p class="note">${txt}</p></div>`;
+}
+
 function renderWeek() {
   const T = today(), mon = addDays(monday(T), 7 * U.weekOff), s = weekStats(mon), g = s.g;
   const W = 320, H = 150, top = 12, bot = 24, max = Math.max(g * 1.4, ...s.days.map(x => x.ate * (x.brule > x.ate ? 1.25 : 1.1)));
@@ -256,10 +268,10 @@ function renderWeek() {
     <div class="row"><button class="round" data-act="wk" data-d="-1" ${U.weekOff <= -26 ? 'disabled' : ''} aria-label="Semaine précédente">‹</button><button class="round" data-act="wk" data-d="1" ${U.weekOff >= 0 ? 'disabled' : ''} aria-label="Semaine suivante">›</button></div></div>
   <div class="card"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Calories par jour">
     <line x1="0" x2="${W}" y1="${y(g)}" y2="${y(g)}" stroke="var(--sage)" stroke-dasharray="4 4" stroke-width="1.5"/>
-    <text x="${W}" y="${y(g) - 4}" text-anchor="end" style="fill:var(--sage)">objectif ${fmt(g)}</text>${bars}</svg>${legende}</div>
+    <text x="${W}" y="${y(g) - 4}" text-anchor="end" style="fill:var(--sage)">objectif ${fmt(g)}</text>${bars}</svg>${legende}${budgetSemaine(s, T)}</div>
   <div class="stats">
     <div class="stat"><b class="num">${fmt(s.avg)}</b><span>kcal par jour en moyenne</span></div>
-    <div class="stat"><b class="num">${s.ok}/${s.done.length}</b><span>jours dans l'objectif</span></div>
+    <div class="stat"><b class="num" style="color:${s.net >= 0 ? 'var(--sage)' : 'var(--accent)'}">${fmt(Math.abs(s.net))} kcal</b><span>${s.net >= 0 ? 'd\'avance sur ton budget' : 'au-delà de ton budget, ça se rattrape'}</span></div>
     <div class="stat"><b class="num" style="color:var(--sage)">${s.net >= 0 ? '−' : '+'}${fmt1(Math.abs(s.net) / 7700)} kg</b><span>effet estimé de la semaine</span></div>
     <div class="stat"><b class="num" style="color:var(--sage)">${fmt(s.actKcal)} kcal</b><span>brûlées · ${s.actMin} min d'activité</span></div>
   </div>
@@ -269,34 +281,63 @@ function renderWeek() {
   if (recapMon < monday(T)) fetchRecap(recapMon);
 }
 
+/* Tendance lissée : chaque pesée tire la courbe à hauteur de 10 % par jour écoulé (≈ 50 % pour une pesée hebdomadaire).
+   On lit ainsi la vraie évolution sans les variations d'eau d'un jour à l'autre. */
+function tendance(ws) {
+  let t = null, prev = null;
+  return ws.map(w => {
+    if (t === null) t = w.kg;
+    else { const j = Math.max(1, Math.round((toD(w.date) - toD(prev)) / 864e5)); t += (1 - Math.pow(0.9, j)) * (w.kg - t); }
+    prev = w.date; return { date: w.date, kg: Math.round(t * 10) / 10 };
+  });
+}
+/* Date estimée d'atteinte de l'objectif, d'après la pente de la tendance sur les 6 dernières semaines. */
+function projection(tr, vise) {
+  const last = tr[tr.length - 1]; if (!last || last.kg <= vise) return null;
+  const pts = tr.filter(t => t.date >= addDays(last.date, -42)); if (pts.length < 3) return { manque: true };
+  const xs = pts.map(t => (toD(t.date) - toD(pts[0].date)) / 864e5); if (xs[xs.length - 1] < 14) return { manque: true };
+  const mx = xs.reduce((a, b) => a + b) / xs.length, my = pts.reduce((a, t) => a + t.kg, 0) / pts.length;
+  let num = 0, den = 0; xs.forEach((x, i) => { num += (x - mx) * (pts[i].kg - my); den += (x - mx) ** 2; });
+  const pente = den ? num / den : 0; if (pente > -0.01) return { stable: true };
+  const jours = (last.kg - vise) / -pente; if (jours > 730) return { loin: true, parSemaine: -pente * 7 };
+  return { date: addDays(last.date, Math.round(jours)), parSemaine: -pente * 7 };
+}
+
 function renderWeight() {
   const p = D.profile, ws = sortedWeights(), lw = ws[ws.length - 1];
   if (!lw) { main.innerHTML = `<div class="head-row"><h1>Mon poids</h1><button class="small acc" data-act="weigh">+ Me peser</button></div><p class="note">Aucune pesée pour l'instant.</p>`; return; }
   const T = today(), since = { '1m': addDays(T, -31), '3m': addDays(T, -92), 'all': '0000' }[U.wRange];
   let pts = ws.filter(w => w.date >= since); if (!pts.length) pts = [lw];
+  const trAll = tendance(ws), trw = trAll[trAll.length - 1], tr = trAll.filter(w => w.date >= pts[0].date), pj = projection(trAll, p.vise);
+  const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+  const pjTxt = !pj ? '' : pj.manque ? 'Encore quelques pesées (sur 2 semaines) pour estimer une date.' : pj.stable ? 'Tendance stable ces dernières semaines : pas de date estimée pour l\'instant.' : pj.loin ? `Tendance : −${fmt1(pj.parSemaine)} kg par semaine. Objectif à plus d\'un an à ce rythme.` : `À ce rythme (−${fmt1(pj.parSemaine)} kg par semaine), objectif vers <b>${(d => (toD(d).getDate() <= 10 ? 'début ' : toD(d).getDate() >= 21 ? 'fin ' : 'mi-') + MOIS[toD(d).getMonth()] + (toD(d).getFullYear() !== new Date().getFullYear() ? ' ' + toD(d).getFullYear() : ''))(pj.date)}</b>.`;
   const W = 320, H = 180, L = 34, R = 10, Tp = 14, B = 24;
-  const vals = pts.map(w => w.kg).concat([p.vise]); const lo = Math.floor(Math.min(...vals) - 1), hi = Math.ceil(Math.max(...vals) + .5);
+  const vals = pts.map(w => w.kg).concat(tr.map(w => w.kg), [p.vise]); const lo = Math.floor(Math.min(...vals) - 1), hi = Math.ceil(Math.max(...vals) + .5);
   const t0 = toD(pts[0].date).getTime(), t1 = Math.max(toD(pts[pts.length - 1].date).getTime(), t0 + 864e5);
   const x = d => pts.length === 1 ? (L + W - R) / 2 : L + (W - L - R) * ((toD(d).getTime() - t0) / (t1 - t0)), y = v => Tp + (H - Tp - B) * (1 - (v - lo) / (hi - lo));
   const path = pts.map((w, i) => (i ? 'L' : 'M') + x(w.date).toFixed(1) + ' ' + y(w.kg).toFixed(1)).join(' ');
-  const area = path + ` L${x(pts[pts.length - 1].date)} ${H - B} L${x(pts[0].date)} ${H - B} Z`;
+  const tpath = tr.map((w, i) => (i ? 'L' : 'M') + x(w.date).toFixed(1) + ' ' + y(w.kg).toFixed(1)).join(' ');
+  const area = tpath + ` L${x(tr[tr.length - 1].date)} ${H - B} L${x(tr[0].date)} ${H - B} Z`;
   const ticks = [lo, (lo + hi) / 2, hi].map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(v) + 3}" text-anchor="end">${fmt1(v)}</text>`).join('');
   const first = ws[0];
   main.innerHTML = `<div class="head-row"><div><p class="muted">Pesée du lundi, facultative</p><h1>Mon poids</h1></div><button class="small acc" data-act="weigh">+ Me peser</button></div>
   <div class="stats">
     <div class="stat"><b class="num">${fmt1(lw.kg)} kg</b><span>dernière pesée · ${shortDate(lw.date)}</span></div>
-    <div class="stat"><b class="num" style="color:var(--sage)">${lw.kg <= first.kg ? '−' : '+'}${fmt1(Math.abs(first.kg - lw.kg))} kg</b><span>depuis le ${shortDate(first.date)}</span></div>
+    <div class="stat"><b class="num" style="color:var(--sage)">${trw.kg <= first.kg ? '−' : '+'}${fmt1(Math.abs(first.kg - trw.kg))} kg</b><span>tendance depuis le ${shortDate(first.date)}</span></div>
   </div>
   <div class="card">
     <div class="seg" role="group" aria-label="Période">${[['1m', '1 mois'], ['3m', '3 mois'], ['all', 'Tout']].map(([k, n]) => `<button class="${U.wRange === k ? 'sel' : ''}" data-act="wr" data-r="${k}">${n}</button>`).join('')}</div>
     <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe de poids">${ticks}
       <line x1="${L}" x2="${W - R}" y1="${y(p.vise)}" y2="${y(p.vise)}" stroke="var(--sage)" stroke-dasharray="4 4" stroke-width="1.5"/>
       <text x="${W - R}" y="${y(p.vise) - 4}" text-anchor="end" style="fill:var(--sage)">objectif ${fmt1(p.vise)} kg</text>
-      ${pts.length > 1 ? `<path d="${area}" fill="var(--accent-soft)" opacity=".7"/><path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
-      ${pts.map((w, i) => `<circle cx="${x(w.date)}" cy="${y(w.kg)}" r="${i === pts.length - 1 ? 5 : 3}" fill="${i === pts.length - 1 ? 'var(--accent)' : 'var(--surface)'}" stroke="var(--accent)" stroke-width="2"/>`).join('')}
+      ${pts.length > 1 ? `<path d="${area}" fill="var(--accent-soft)" opacity=".7"/><path d="${path}" fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="2 3" opacity=".6"/><path d="${tpath}" fill="none" stroke="var(--accent)" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+      ${pts.map((w, i) => `<circle cx="${x(w.date)}" cy="${y(w.kg)}" r="${i === pts.length - 1 ? 4 : 2.6}" fill="var(--surface)" stroke="var(--muted)" stroke-width="1.5"/>`).join('')}
+      ${pts.length > 1 ? `<circle cx="${x(trw.date)}" cy="${y(trw.kg)}" r="5" fill="var(--accent)"/>` : ''}
       <text x="${L}" y="${H - 6}">${shortDate(pts[0].date)}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${shortDate(pts[pts.length - 1].date)}</text>
     </svg>
-    <p class="note">${lw.kg > p.vise ? 'Encore ' + fmt1(lw.kg - p.vise) + ' kg avant l\'objectif' : 'Objectif atteint 🎉'} · IMC ${fmt1(bmi(lw.kg, p.taille))}, repère indicatif</p>
+    ${pts.length > 1 ? '<div class="legend"><span><i style="background:var(--accent)"></i>Tendance (lissée)</span><span><i style="background:var(--surface);border:1.5px solid var(--muted);border-radius:50%"></i>Pesées</span></div>' : ''}
+    <p class="note">Tendance : <b class="num">${fmt1(trw.kg)} kg</b>. ${trw.kg > p.vise ? 'Encore ' + fmt1(trw.kg - p.vise) + ' kg avant l\'objectif.' : 'Objectif atteint 🎉'} ${pjTxt}</p>
+    <p class="note">IMC ${fmt1(bmi(lw.kg, p.taille))}, repère indicatif. La balance varie d'un jour à l'autre (eau, sel) : la tendance montre la vraie évolution.</p>
   </div>
   <div class="card wlist" style="gap:0"><p class="h3" style="margin-bottom:6px">Historique</p>
     ${ws.slice().reverse().slice(0, 12).map((w, i, a) => { const prev = a[i + 1]; const d = prev ? w.kg - prev.kg : 0; return `<button class="line" data-act="delWeight" data-d="${w.date}"><span class="grow"><span class="n">${fmt1(w.kg)} kg</span><span class="q">${longDate(w.date)}</span></span><span class="kc num">${prev ? (d <= 0 ? '−' : '+') + fmt1(Math.abs(d)) : ''}</span></button>`; }).join('')}</div>`;
@@ -320,17 +361,20 @@ function renderProfile() {
     <div class="field"><span class="label">Taille du texte</span><div class="seg">${['A−', 'A', 'A+'].map((n, i) => `<button class="${D.reglages.fs === i ? 'sel' : ''}" data-act="fs" data-v="${i}">${n}</button>`).join('')}</div></div>
   </div>
   <div class="card"><p class="h3">💾 Sauvegarde</p>
-    <p class="note">${days == null ? '<b style="color:var(--accent)">Aucune sauvegarde pour l\'instant.</b> ' : days > 30 ? `<b style="color:var(--accent)">Dernière sauvegarde il y a ${days} jours.</b> ` : 'Sauvegarde à jour. '}Tes données ne sont que sur ce téléphone : garde une copie, surtout sur iPhone.</p>
-    <div class="row"><button class="small acc" data-act="export">Exporter</button><button class="small" data-act="import">Importer</button></div></div>
+    <p class="note">${SAUV.texte()}</p>
+    <div class="row" style="flex-wrap:wrap"><button class="small acc" data-act="sauvNow">Sauvegarder maintenant</button><button class="small" data-act="restaurer">Restaurer</button></div>
+    <p class="note">Tu peux aussi garder un fichier : <button class="link" data-act="export" style="padding:0;min-height:0">Exporter</button> · <button class="link" data-act="import" style="padding:0;min-height:0">Importer</button></p></div>
   <div class="card"><p class="h3">Application</p>
     <p class="note" id="updInfo">SuiviKcal v${VERSION}${ENV !== 'prod' ? ' · ' + ENV.toUpperCase() : ''}</p>
-    <button class="ghost" data-act="upd">Rechercher une mise à jour</button></div>`;
+    <button class="ghost" data-act="upd">Rechercher une mise à jour</button>
+    <p class="note">Aliments : table Ciqual 2025 (Anses), produits : Open Food Facts.</p></div>`;
 }
 
 /* ================== Feuilles ================== */
 const sheet = $('#sheet'), scrim = $('#scrim');
 function openSheet(title, body, mount) {
   sheet.innerHTML = `<div class="sheet-head"><h2>${title}</h2><button class="round" data-close aria-label="Fermer">✕</button></div><div class="sheet-body">${body}</div>`;
+  const dessus = !$('#onb').hidden; sheet.classList.toggle('top', dessus); scrim.classList.toggle('top', dessus);   /* au-dessus de l'écran d'accueil si besoin */
   sheet.hidden = scrim.hidden = false; sheet.scrollTop = 0; mount && mount(sheet);
 }
 function closeSheet() { sheet.hidden = scrim.hidden = true; sheet.innerHTML = ''; if (reloadPending) location.reload(); }
@@ -373,7 +417,7 @@ function openAdd(meal) {
       ${favsTries().slice(0, 12).map(f => `<button class="chip fav" data-fav="${f.id}">⭐ ${esc(f.name)}</button>`).join('')}
       <button class="chip" data-same>↺ Comme la veille</button></div>
       ${D.favs.length ? '' : '<p class="note">Touche l\'étoile ☆ à côté d\'un aliment pour le retrouver ici.</p>'}</div>
-    <div class="field"><label class="label" for="q">Chercher un aliment (marche hors ligne)</label><input class="input" id="q" placeholder="ex. yaourt, pâtes, pomme…" autocomplete="off"><div class="search-list" id="ql"></div></div>
+    <div class="field"><label class="label" for="q">Chercher un aliment (table Ciqual, marche hors ligne)</label><input class="input" id="q" placeholder="ex. yaourt, pâtes, pomme…" autocomplete="off"><div class="search-list" id="ql"></div></div>
 `, root => {
     bindMealSeg(root, st); bindAddTabs(root, st.meal);
     root.querySelectorAll('[data-w]').forEach(b => b.onclick = () => ({ write: () => openWrite(st.meal, false), voice: () => openWrite(st.meal, true), photo: () => openPhoto(st.meal), scan: () => openScan(st.meal) })[b.dataset.w]());
@@ -384,14 +428,38 @@ function openAdd(meal) {
     root.querySelector('[data-same]').onclick = () => { const l = D.entries.filter(e => e.date === y && e.meal === st.meal && !e.pending); if (!l.length) { toast('Rien de noté la veille pour ce repas'); return; } addEntries(l.map(e => ({ ...e, id: uid() })), st.meal, 'Comme la veille, c\'est noté ↺', true); };
     const q = root.querySelector('#q'), ql = root.querySelector('#ql');
     q.oninput = () => {
-      const v = norm(q.value.trim()); if (v.length < 2) { ql.innerHTML = ''; return; }
-      const fh = favsTries().filter(f => norm(f.name).includes(v)).slice(0, 5);
-      const hits = FOODS.filter(f => norm(f.n).includes(v) || f.keys.some(k => k.includes(v))).slice(0, 8 - Math.min(3, fh.length));
-      ql.innerHTML = fh.map(f => `<button class="line" data-qf="${f.id}"><span class="grow"><span class="n">⭐ ${esc(f.name)}</span><span class="q">${esc(f.qty)} · favori</span></span><span class="kc num">${fmt(f.kcal)}</span></button>`).join('') + hits.map(f => `<button class="line" data-f="${f.id}"><span class="grow"><span class="n">${f.n}</span><span class="q">${f.pl} · ${fmt(f.kc)} kcal / 100 g</span></span><span class="kc num">${fmt(f.kc * f.pg / 100)}</span></button>`).join('') || '<p class="note">Pas trouvé. Essaie « Écrire » pour une estimation.</p>';
-      ql.querySelectorAll('[data-f]').forEach(b => b.onclick = () => openPortion(FOOD[b.dataset.f], st.meal, 'ciqual'));
+      const brut = q.value.trim(), v = norm(brut); if (v.length < 2) { ql.innerHTML = ''; return; }
+      const mots = v.split(/\s+/).filter(Boolean);
+      const fh = favsTries().filter(f => mots.every(m => norm(f.name).includes(m))).slice(0, 4);
+      const hits = FOODS.filter(f => mots.every(m => norm(f.n).includes(m) || f.keys.some(k => k.includes(m)))).slice(0, 4);
+      const ciq = CIQ ? chercherCiqual(mots, 12 - fh.length - hits.length, hits) : [];
+      if (!CIQ) chargerCiqual().then(() => { if (q.value.trim() === brut) q.oninput(); });
+      ql.innerHTML = fh.map(f => `<button class="line" data-qf="${f.id}"><span class="grow"><span class="n">⭐ ${esc(f.name)}</span><span class="q">${esc(f.qty)} · favori</span></span><span class="kc num">${fmt(f.kcal)}</span></button>`).join('')
+        + hits.concat(ciq).map(f => `<button class="line" data-f="${f.id}"><span class="grow"><span class="n">${esc(f.n)}</span><span class="q">${esc(f.pl)} · ${fmt(f.kc)} kcal / 100 g</span></span><span class="kc num">${fmt(f.kc * f.pg / 100)}</span></button>`).join('')
+        || (CIQ ? '<p class="note">Pas trouvé. Essaie « Écrire » pour une estimation.</p>' : '<p class="note">Recherche…</p>');
+      ql.querySelectorAll('[data-f]').forEach(b => b.onclick = () => openPortion(FOOD[b.dataset.f] || CIQI[b.dataset.f], st.meal, 'ciqual'));
       ql.querySelectorAll('[data-qf]').forEach(b => b.onclick = () => addFav(b.dataset.qf, st.meal));
     };
   });
+}
+
+/* Table Ciqual complète (≈ 3 450 aliments, ~60 Ko compressés) : chargée seulement à la première recherche, gardée en cache hors ligne. */
+let CIQ = null, CIQI = {}, ciqP = null;
+function chargerCiqual() {
+  if (CIQ) return Promise.resolve(CIQ);
+  if (!ciqP) ciqP = fetch('data/ciqual.json').then(r => r.json()).then(j => {
+    const C = { v: 'veg', f: 'fruit', p: 'prot', s: 'sweet' };
+    CIQ = j.a.map((r, i) => ({ id: 'c' + i, n: r[0], kc: r[1], p: r[2], g: r[3], l: r[4], pg: 100, pl: '100 g', cat: C[r[5]] || '', k: norm(r[0]) }));
+    CIQ.forEach(f => { CIQI[f.id] = f; }); return CIQ;
+  }).catch(() => { ciqP = null; return null; });
+  return ciqP;
+}
+function chercherCiqual(mots, max, deja) {
+  if (max <= 0) return [];
+  const noms = new Set(deja.map(f => norm(f.n)));
+  return CIQ.filter(f => mots.every(m => f.k.includes(m)) && !noms.has(f.k))
+    .map(f => ({ f, s: (f.k.startsWith(mots[0]) ? 0 : 1000) + (new RegExp('\\b' + mots[0].replace(/[^a-z0-9]/g, '')).test(f.k) ? 0 : 500) + f.k.length }))
+    .sort((a, b) => a.s - b.s).slice(0, max).map(x => x.f);
 }
 
 function addTitle() { return U.day === today() ? 'Ajouter' : 'Ajouter · ' + dayLabel(U.day).toLowerCase(); }
@@ -483,7 +551,7 @@ function openScan(meal) {
         const j = await SKApi.appel('code', { ean });
         if (!j.ok || !j.produit) { closeSheet(); toast('Produit inconnu d\'Open Food Facts. Essaie « Écrire » 🙂', null, null, 4500); return; }
         const p = j.produit;
-        openPortion({ id: 'off', n: p.nom, kc: p.kcal100, p: p.p, g: p.g, l: p.l, pg: p.portion_g || 100, pl: (p.portion_g || 100) + ' g', cat: '' }, st.meal, 'scan', 'Open Food Facts');
+        openPortion({ id: 'off', n: p.nom, kc: p.kcal100, p: p.p, g: p.g, l: p.l, pg: p.portion_g || 100, pl: (p.portion_g || 100) + ' g', cat: '', ns: p.nutriscore || '' }, st.meal, 'scan', 'Open Food Facts');
       } catch (e) { if (!handleAccessError(e)) queuePending(ean, 'code', st.meal); }
     };
     root.querySelector('#go').onclick = () => { const v = root.querySelector('#ean').value.replace(/\D/g, ''); if (v.length >= 8) found(v); else toast('Il faut au moins 8 chiffres'); };
@@ -513,7 +581,7 @@ function openPortion(f, meal, src, origin) {
   stopScan();
   const st = { meal, g: f.pg };
   const kc = () => Math.round(f.kc * st.g / 100);
-  openSheet(esc(f.n), `<span class="ai-badge">${origin || 'Base Ciqual'} · ${fmt(f.kc)} kcal / 100 g</span>
+  openSheet(esc(f.n), `<div class="row" style="gap:8px;flex-wrap:wrap"><span class="ai-badge">${origin || 'Base Ciqual'} · ${fmt(f.kc)} kcal / 100 g</span>${f.ns ? `<span class="nutri n${f.ns}" title="Nutri-Score ${f.ns}">Nutri-Score <b>${f.ns}</b></span>` : ''}</div>
     ${mealSeg(meal)}
     <div class="field"><label class="label" for="gr">Quantité (g)</label>
       <div class="stepper"><button class="round" id="m" aria-label="Moins 10 g">−</button><input class="input num" id="gr" inputmode="decimal" value="${st.g}"><button class="round" id="p" aria-label="Plus 10 g">+</button></div>
@@ -733,7 +801,8 @@ function openOnboarding(edit) {
   const years = []; for (let y = YEAR - 16; y >= YEAR - 95; y--) years.push(y);
   o.innerHTML = `<div class="onb-in">
     <div class="hello">🌱</div><h1>${edit ? 'Mon profil' : 'Bienvenue'}</h1>
-    <p class="intro">Quelques questions, sans jugement, pour calculer ton objectif. Tout reste sur ton téléphone.</p>
+    <p class="intro">Quelques questions, sans jugement, pour calculer ton objectif. Tes données restent sur ton téléphone, avec une copie de secours sur ton serveur.</p>
+    ${edit ? '' : '<button class="link" id="o-rest" style="align-self:center">Déjà utilisé SuiviKcal ? Restaurer ma copie de secours</button>'}
     <div class="field"><span class="label">Je suis</span><div class="seg" id="o-sx"><button data-v="F">Une femme</button><button data-v="H">Un homme</button></div></div>
     <div class="two">
       <div class="field"><label class="label" for="o-an">Année de naissance</label><select class="input" id="o-an">${years.map(y => `<option ${y === p.annee ? 'selected' : ''}>${y}</option>`).join('')}</select></div>
@@ -775,6 +844,7 @@ function openOnboarding(edit) {
     save(); o.hidden = true; render(); toast(edit ? 'Profil mis à jour 🎯' : 'Profil prêt, objectif calculé 🎯');
   };
   if (edit) o.querySelector('#o-cancel').onclick = () => { o.hidden = true; };
+  else o.querySelector('#o-rest').onclick = () => SAUV.restaurer();
 }
 
 /* ================== Accès sur invitation ================== */
@@ -812,6 +882,7 @@ function enterApp() {
   const o = $('#onb'); o.hidden = true; o.onclick = null;
   if (!D.profile) openOnboarding(false); else render();
   resolvePending();
+  setTimeout(() => SAUV.auto(), 5000);
 }
 async function checkAccess(quiet) {
   try {
@@ -841,6 +912,67 @@ async function startAccess(lien) {
 }
 
 /* ================== Sauvegarde ================== */
+function remplacerDonnees(j) {
+  const keep = D.reglages; D = Object.assign(VIDE(), j); delete D.app; delete D.version; delete D.exporte; D.reglages = Object.assign({}, j.reglages || {}, keep);
+  save(); $('#onb').hidden = true; if (!D.profile) openOnboarding(false); else render();
+}
+
+/* Copie de secours automatique sur le serveur (n8n) : une fois par jour à l'ouverture, seulement s'il y a du nouveau.
+   Données compressées puis chiffrées (AES-GCM) avec une clé propre à ce téléphone, rangée à part sur le serveur.
+   Le serveur ne garde que la dernière copie. */
+const SAUV = (function () {
+  const K = 'suivikcal.' + ENV + '.';
+  const lget = k => { try { return localStorage.getItem(K + k) || ''; } catch (e) { return ''; } };
+  const lset = (k, v) => { try { localStorage.setItem(K + k, v); } catch (e) {} };
+  const b64 = u => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+  const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const hex = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
+  const sig = t => { let h = 5381; for (let i = 0; i < t.length; i++) h = (h * 33 + t.charCodeAt(i)) | 0; return t.length + ':' + h; };
+  async function flux(u, T) { return new Uint8Array(await new Response(new Blob([u]).stream().pipeThrough(new T('gzip'))).arrayBuffer()); }
+  async function cle(fournie) {
+    let c = fournie || lget('cleSauv');
+    if (!c) { const j = await SKApi.appel('sauvecle'); c = j.cle; }
+    lset('cleSauv', c);
+    return crypto.subtle.importKey('raw', hex(c), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  }
+  async function sauver(manuel) {
+    if (!D.profile) { if (manuel) toast('Rien à sauvegarder pour l\'instant'); return; }
+    if (!navigator.onLine || !self.crypto || !crypto.subtle) { if (manuel) toast('Pas de réseau : réessaie plus tard'); return; }
+    const txt = JSON.stringify(D), s = sig(txt);
+    if (!manuel && s === lget('sauvSig')) { lset('sauvJour', today()); return; }
+    try {
+      const z = self.CompressionStream ? 1 : 0, brut = new TextEncoder().encode(txt), donnees = z ? await flux(brut, CompressionStream) : brut;
+      const iv = crypto.getRandomValues(new Uint8Array(12)), k = await cle();
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, donnees));
+      const tout = new Uint8Array(13 + ct.length); tout[0] = z; tout.set(iv, 1); tout.set(ct, 13);
+      await SKApi.appel('sauver', { data: b64(tout) }, 30000);
+      lset('sauvSig', s); lset('sauvJour', today()); lset('sauvDate', new Date().toISOString());
+      if (manuel) { toast('Copie de secours à jour ☁️'); if (U.tab === 'profile') render(); }
+    } catch (e) { if (manuel && !handleAccessError(e)) toast('Sauvegarde impossible pour l\'instant'); }
+  }
+  function auto() { if (lget('sauvJour') !== today()) sauver(false); }
+  async function restaurer() {
+    if (!navigator.onLine) { toast('Il faut du réseau pour restaurer'); return; }
+    try {
+      const j = await SKApi.appel('restaurer', {}, 30000);
+      if (!j.ok) { toast('Aucune copie de secours sur le serveur pour ce téléphone', null, null, 4500); return; }
+      const tout = unb64(j.data), k = await cle(j.cle);
+      const clair = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: tout.slice(1, 13) }, k, tout.slice(13)));
+      const d = JSON.parse(new TextDecoder().decode(tout[0] ? await flux(clair, DecompressionStream) : clair));
+      openSheet('Restaurer la copie de secours', `<p class="note">Copie du ${esc(new Date(j.maj).toLocaleString('fr-FR', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }))} : ${(d.entries || []).length} aliments notés, ${(d.weights || []).length} pesées.</p>
+        <p class="note"><b>Elle remplace toutes les données actuelles de ce téléphone.</b></p>
+        <button class="primary" id="ok">Restaurer</button><button class="ghost" data-close>Annuler</button>`, root => {
+        root.querySelector('#ok').onclick = () => { remplacerDonnees(d); lset('sauvSig', sig(JSON.stringify(D))); closeSheet(); toast('Données restaurées ✓'); };
+      });
+    } catch (e) { if (!handleAccessError(e)) toast('Restauration impossible pour l\'instant'); }
+  }
+  function texte() {
+    const d = lget('sauvDate');
+    return (d ? 'Copie de secours sur ton serveur, mise à jour chaque jour. Dernière : <b>' + new Date(d).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + '</b>.'
+      : 'Copie de secours automatique sur ton serveur, une fois par jour (la première se fait à la prochaine ouverture avec du réseau).') + ' Seule la dernière copie est gardée.';
+  }
+  return { sauver, auto, restaurer, texte };
+})();
 async function exportData() {
   /* Partage d'un fichier texte (accepté par Android et iPhone ; le .json est refusé par le partage),
      sinon téléchargement, sinon affichage du contenu à copier. */
@@ -871,8 +1003,7 @@ $('#importFile').onchange = e => {
       <p class="note"><b>Elle remplace toutes les données actuelles de ce téléphone.</b></p>
       <button class="primary" id="ok">Remplacer mes données</button><button class="ghost" data-close>Annuler</button>`, root => {
       root.querySelector('#ok').onclick = () => {
-        const keep = D.reglages; D = Object.assign(VIDE(), j); delete D.app; delete D.version; delete D.exporte; D.reglages = keep;
-        save(); closeSheet(); render(); toast('Données importées ✓');
+        remplacerDonnees(j); closeSheet(); toast('Données importées ✓');
       };
     });
   };
@@ -912,7 +1043,7 @@ const ACT = {
   anim: () => { D.reglages.anim = D.reglages.anim === false; save(); render(); },
   theme: el => { D.reglages.theme = el.dataset.v; save(); applyLook(); render(); },
   fs: el => { D.reglages.fs = +el.dataset.v; save(); applyLook(); render(); },
-  export: exportData, import: () => $('#importFile').click(),
+  export: exportData, import: () => $('#importFile').click(), sauvNow: () => SAUV.sauver(true), restaurer: () => SAUV.restaurer(),
   editProfile: () => openOnboarding(true), upd: () => checkUpdate($('#updInfo'))
 };
 main.addEventListener('click', e => { const el = e.target.closest('[data-act]'); if (el && !el.disabled && ACT[el.dataset.act]) ACT[el.dataset.act](el); });

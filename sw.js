@@ -10,7 +10,7 @@ const CACHE = PREFIX + self.SUIVIKCAL_VERSION;
 const LOCAL = !/github\.io$/.test(self.location.hostname);
 
 const ASSETS = [
-  './', 'index.html', 'css/app.css', 'js/aliments.js', 'js/ean.js', 'js/api.js', 'js/app.js', 'version.js',
+  './', 'index.html', 'css/app.css', 'data/ciqual.json', 'js/aliments.js', 'js/ean.js', 'js/api.js', 'js/app.js', 'version.js',
   'manifest.webmanifest', 'manifest-test.webmanifest',
   'fonts/fredoka-latin-500-normal.woff2', 'fonts/fredoka-latin-600-normal.woff2',
   'fonts/nunito-latin-400-normal.woff2', 'fonts/nunito-latin-600-normal.woff2', 'fonts/nunito-latin-700-normal.woff2', 'fonts/nunito-latin-800-normal.woff2',

@@ -250,3 +250,15 @@ video.scan{width:100%;border-radius:18px;background:#000;aspect-ratio:4/3;object
 .bulle[hidden]{display:none}
 .bulle p{margin:0}
 .bulle .link{align-self:flex-end;padding:0}
+
+/* Budget de la semaine */
+.wbudget{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line);padding-top:10px}
+.wbudget .bar{height:8px;border-radius:99px;background:var(--line);overflow:hidden}
+.wbudget .bar i{display:block;height:100%;background:var(--accent);border-radius:99px}
+
+/* Nutri-Score (produits scannés) */
+.nutri{font-size:.74em;font-weight:800;border-radius:99px;padding:3px 10px;color:#fff}
+.nutri b{font-weight:900;margin-left:2px}
+.nutri.nA{background:#038141}.nutri.nB{background:#85BB2F}.nutri.nC{background:#E6A800}.nutri.nD{background:#EE8100}.nutri.nE{background:#E63E11}
+
+.scrim.top{z-index:55}.sheet.top{z-index:56}
