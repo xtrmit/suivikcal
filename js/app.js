@@ -28,7 +28,7 @@ function shortDate(s) { return toD(s).toLocaleDateString('fr-FR', { day: 'numeri
 function mealByHour() { const n = new Date(), h = n.getHours() + n.getMinutes() / 60; return h < 10.5 ? 'pdj' : h < 15 ? 'dej' : h < 18 ? 'col' : 'din'; }
 
 /* ================== Données (sur le téléphone uniquement) ================== */
-const VIDE = () => ({ profile: null, entries: [], acts: [], weights: [], feels: {}, favs: [], recaps: {}, lastBackup: '', reglages: { theme: 'auto', fs: 1 }, lastV: '' });
+const VIDE = () => ({ profile: null, entries: [], acts: [], weights: [], feels: {}, favs: [], recaps: {}, objHist: [], lastBackup: '', reglages: { theme: 'auto', fs: 1 }, lastV: '' });
 let D;
 try { D = Object.assign(VIDE(), JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) { D = VIDE(); }
 function save() {
@@ -90,6 +90,24 @@ function goalInfo(p = D.profile) {
   return { age, bmr, tdee, deficit: Math.max(0, tdee - goal), goal, notes, young, perWeek: Math.max(0, tdee - goal) * 7 / 7700,
     pT: goal * .2 / 4, gT: goal * .5 / 4, lT: goal * .3 / 9 };
 }
+/* Objectif du jour d : on garde l'objectif tel qu'il était à ce moment-là.
+   - Historique noté par l'app (objHist : à partir de telle date, tel objectif), enregistré à chaque changement d'objectif.
+   - Avant le début de l'historique : recalculé avec le poids de la pesée en vigueur ce jour-là. */
+function goalAt(d) {
+  if (!D.profile) return 0;
+  if (d >= today()) return goalInfo().goal;
+  const h = (D.objHist || []).filter(x => x.d <= d);
+  if (h.length) return h[h.length - 1].g;
+  const ws = sortedWeights(), w = ws.filter(x => x.date <= d).pop() || ws[0];
+  return goalInfo(Object.assign({}, D.profile, { poids: w ? w.kg : D.profile.poids })).goal;
+}
+function noterObjectif() {
+  if (!D.profile) return;
+  const g = goalInfo().goal, T = today(), h = D.objHist || (D.objHist = []), last = h[h.length - 1];
+  if (last && last.g === g) return;
+  if (last && last.d === T) last.g = g; else h.push({ d: T, g });
+  save();
+}
 function minKg(taille) { return Math.ceil(18.5 * (taille / 100) ** 2 * 2) / 2; }
 function bmi(kg, taille) { return kg / ((taille / 100) ** 2); }
 
@@ -106,6 +124,7 @@ function render() {
   if (!D.profile) return;
   $('#netPill').hidden = navigator.onLine;
   document.querySelectorAll('.tabs [data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === U.tab ? 'page' : 'false'));
+  noterObjectif();
   ({ today: renderToday, week: renderWeek, weight: renderWeight, profile: renderProfile })[U.tab]();
 }
 
@@ -118,7 +137,7 @@ function ring(pct) {
 function dayLabel(d) { const t = today(); return d === t ? 'Aujourd\'hui' : d === addDays(t, -1) ? 'Hier' : longDate(d).replace(/^./, c => c.toUpperCase()); }
 
 function renderToday() {
-  const T = today(), day = U.day, g = goalInfo(), b = burned(day), budget = g.goal + b, ate = eaten(day), rest = budget - ate, pct = Math.round(ate / budget * 100);
+  const T = today(), day = U.day, g = goalInfo(), b = burned(day), budget = goalAt(day) + b, ate = eaten(day), rest = budget - ate, pct = Math.round(ate / budget * 100);
   const es = dayEntries(day).filter(e => !e.pending);
   const P = es.reduce((a, e) => a + e.p, 0), G = es.reduce((a, e) => a + e.g, 0), L = es.reduce((a, e) => a + e.l, 0);
   const pend = dayEntries(day).filter(e => e.pending).length;
@@ -176,16 +195,17 @@ function missing(day) {
 }
 
 function strip() {
-  const g = goalInfo().goal, T = today(), mon = monday(T);
+  const T = today(), mon = monday(T);
   return `<div class="strip">${JOURS.map((j, i) => {
-    const d = addDays(mon, i), fut = d > T, ate = eaten(d), bud = g + burned(d), p = ate / bud * 100;
+    const d = addDays(mon, i), fut = d > T, ate = eaten(d), bud = goalAt(d) + burned(d), p = ate / bud * 100;
     return `<button class="dcell ${d === U.day ? 'today' : ''} ${fut ? 'future' : ''}" ${fut ? 'disabled' : `data-act="goDay" data-d="${d}"`}><span class="l">${j}</span><span class="col"><i class="${p > 105 ? 'over' : ''}" style="height:${fut ? 0 : Math.min(100, p)}%"></i></span><span class="p num">${fut || !ate ? '·' : Math.round(p) + '%'}</span></button>`;
   }).join('')}</div>`;
 }
 
 function weekStats(mon) {
-  const g = goalInfo().goal, T = today(), fin = addDays(mon, 7), days = [];
-  for (let i = 0; i < 7; i++) { const d = addDays(mon, i); const ate = eaten(d), br = burned(d); days.push({ d, ate, brule: br, bud: g + br, fut: d > T, has: ate > 0 }); }
+  const T = today(), fin = addDays(mon, 7), days = [];
+  for (let i = 0; i < 7; i++) { const d = addDays(mon, i); const ate = eaten(d), br = burned(d), obj = goalAt(d); days.push({ d, ate, brule: br, obj, bud: obj + br, fut: d > T, has: ate > 0 }); }
+  const g = days.filter(x => !x.fut).concat(days[0]).slice(-1)[0].obj;   /* objectif affiché : celui du dernier jour écoulé */
   const done = days.filter(x => x.has && x.d <= T);
   const avg = done.length ? done.reduce((a, x) => a + x.ate, 0) / done.length : 0;
   const ok = done.filter(x => x.ate <= x.bud * 1.05).length;
@@ -236,7 +256,7 @@ function pastille(cx, yb, v) {
 
 /* Budget à la semaine (affichage) : objectif × 7 + sport de la semaine, moins ce qui a été mangé. */
 function budgetSemaine(s, T) {
-  const budget = s.g * 7 + s.days.reduce((a, x) => a + x.brule, 0), mange = s.days.reduce((a, x) => a + x.ate, 0), reste = budget - mange;
+  const budget = s.days.reduce((a, x) => a + x.obj + x.brule, 0), mange = s.days.reduce((a, x) => a + x.ate, 0), reste = budget - mange;
   const restants = s.days.filter(x => x.d >= T).length, enCours = restants > 0 && s.days[0].d <= T;
   let txt;
   if (!restants) txt = reste >= 0 ? `Semaine terminée avec <b class="num">${fmt(reste)} kcal</b> d'avance 👏` : `Semaine terminée <b class="num">${fmt(-reste)} kcal</b> au-delà du budget. La suivante repart de zéro.`;
@@ -248,8 +268,10 @@ function budgetSemaine(s, T) {
 
 function renderWeek() {
   const T = today(), mon = addDays(monday(T), 7 * U.weekOff), s = weekStats(mon), g = s.g;
-  const W = 320, H = 150, top = 12, bot = 24, max = Math.max(g * 1.4, ...s.days.map(x => x.ate * (x.brule > x.ate ? 1.25 : 1.1)));
+  const W = 320, H = 150, top = 12, bot = 24, max = Math.max(...s.days.map(x => x.obj * 1.4), ...s.days.map(x => x.ate * (x.brule > x.ate ? 1.25 : 1.1)));
   const y = v => top + (H - top - bot) * (1 - v / max), bw = 26, gap = W / 7;
+  /* Ligne d'objectif en marches : chaque jour garde l'objectif qui était fixé ce jour-là. */
+  const objLigne = s.days.map((x, i) => (i ? 'L' : 'M') + (gap * i).toFixed(1) + ' ' + y(x.obj).toFixed(1) + ' L' + (gap * (i + 1)).toFixed(1) + ' ' + y(x.obj).toFixed(1)).join(' ');
   /* Barre = tout ce qui a été mangé. Bas (corail) : le « net » ; haut (vert sauge) : la part compensée par le sport. */
   const bars = s.days.map((x, i) => {
     const cx = gap * i + gap / 2, ph = v => (H - top - bot) * (v / max);
@@ -267,8 +289,8 @@ function renderWeek() {
   main.innerHTML = `<div class="head-row"><div><p class="muted">${shortDate(mon)} → ${shortDate(addDays(mon, 6))}</p><h1>${label}</h1></div>
     <div class="row"><button class="round" data-act="wk" data-d="-1" ${U.weekOff <= -26 ? 'disabled' : ''} aria-label="Semaine précédente">‹</button><button class="round" data-act="wk" data-d="1" ${U.weekOff >= 0 ? 'disabled' : ''} aria-label="Semaine suivante">›</button></div></div>
   <div class="card"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Calories par jour">
-    <line x1="0" x2="${W}" y1="${y(g)}" y2="${y(g)}" stroke="var(--sage)" stroke-dasharray="4 4" stroke-width="1.5"/>
-    <text x="${W}" y="${y(g) - 4}" text-anchor="end" style="fill:var(--sage)">objectif ${fmt(g)}</text>${bars}</svg>${legende}${budgetSemaine(s, T)}</div>
+    <path d="${objLigne}" fill="none" stroke="var(--sage)" stroke-dasharray="4 4" stroke-width="1.5"/>${bars}</svg>
+    <div class="legend"><span><i style="background:none;border-top:2px dashed var(--sage);border-radius:0;height:0;width:14px;vertical-align:3px"></i>Objectif : ${[...new Set(s.days.map(x => x.obj))].map(fmt).join(' puis ')} kcal par jour</span></div>${legende}${budgetSemaine(s, T)}</div>
   <div class="stats">
     <div class="stat"><b class="num">${fmt(s.avg)}</b><span>kcal par jour en moyenne</span></div>
     <div class="stat"><b class="num" style="color:${s.net >= 0 ? 'var(--sage)' : 'var(--accent)'}">${fmt(Math.abs(s.net))} kcal</b><span>${s.net >= 0 ? 'd\'avance sur ton budget' : 'au-delà de ton budget, ça se rattrape'}</span></div>
@@ -312,33 +334,32 @@ function renderWeight() {
   const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
   const pjTxt = !pj ? '' : pj.manque ? 'Encore quelques pesées (sur 2 semaines) pour estimer une date.' : pj.stable ? 'Tendance stable ces dernières semaines : pas de date estimée pour l\'instant.' : pj.loin ? `Tendance : −${fmt1(pj.parSemaine)} kg par semaine. Objectif à plus d\'un an à ce rythme.` : `À ce rythme (−${fmt1(pj.parSemaine)} kg par semaine), objectif vers <b>${(d => (toD(d).getDate() <= 10 ? 'début ' : toD(d).getDate() >= 21 ? 'fin ' : 'mi-') + MOIS[toD(d).getMonth()] + (toD(d).getFullYear() !== new Date().getFullYear() ? ' ' + toD(d).getFullYear() : ''))(pj.date)}</b>.`;
   const W = 320, H = 180, L = 34, R = 10, Tp = 14, B = 24;
-  const vals = pts.map(w => w.kg).concat(tr.map(w => w.kg), [p.vise]); const lo = Math.floor(Math.min(...vals) - 1), hi = Math.ceil(Math.max(...vals) + .5);
+  const vals = pts.map(w => w.kg).concat([p.vise]); const lo = Math.floor(Math.min(...vals) - 1), hi = Math.ceil(Math.max(...vals) + .5);
   const t0 = toD(pts[0].date).getTime(), t1 = Math.max(toD(pts[pts.length - 1].date).getTime(), t0 + 864e5);
   const x = d => pts.length === 1 ? (L + W - R) / 2 : L + (W - L - R) * ((toD(d).getTime() - t0) / (t1 - t0)), y = v => Tp + (H - Tp - B) * (1 - (v - lo) / (hi - lo));
   const path = pts.map((w, i) => (i ? 'L' : 'M') + x(w.date).toFixed(1) + ' ' + y(w.kg).toFixed(1)).join(' ');
-  const tpath = tr.map((w, i) => (i ? 'L' : 'M') + x(w.date).toFixed(1) + ' ' + y(w.kg).toFixed(1)).join(' ');
-  const area = tpath + ` L${x(tr[tr.length - 1].date)} ${H - B} L${x(tr[0].date)} ${H - B} Z`;
+  const area = path + ` L${x(pts[pts.length - 1].date)} ${H - B} L${x(pts[0].date)} ${H - B} Z`;
   const ticks = [lo, (lo + hi) / 2, hi].map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(v) + 3}" text-anchor="end">${fmt1(v)}</text>`).join('');
   const first = ws[0];
   main.innerHTML = `<div class="head-row"><div><p class="muted">Pesée du lundi, facultative</p><h1>Mon poids</h1></div><button class="small acc" data-act="weigh">+ Me peser</button></div>
   <div class="stats">
     <div class="stat"><b class="num">${fmt1(lw.kg)} kg</b><span>dernière pesée · ${shortDate(lw.date)}</span></div>
-    <div class="stat"><b class="num" style="color:var(--sage)">${trw.kg <= first.kg ? '−' : '+'}${fmt1(Math.abs(first.kg - trw.kg))} kg</b><span>tendance depuis le ${shortDate(first.date)}</span></div>
+    <div class="stat"><b class="num" style="color:var(--sage)">${lw.kg <= first.kg ? '−' : '+'}${fmt1(Math.abs(first.kg - lw.kg))} kg</b><span>depuis le ${shortDate(first.date)}</span></div>
   </div>
   <div class="card">
     <div class="seg" role="group" aria-label="Période">${[['1m', '1 mois'], ['3m', '3 mois'], ['all', 'Tout']].map(([k, n]) => `<button class="${U.wRange === k ? 'sel' : ''}" data-act="wr" data-r="${k}">${n}</button>`).join('')}</div>
     <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe de poids">${ticks}
       <line x1="${L}" x2="${W - R}" y1="${y(p.vise)}" y2="${y(p.vise)}" stroke="var(--sage)" stroke-dasharray="4 4" stroke-width="1.5"/>
       <text x="${W - R}" y="${y(p.vise) - 4}" text-anchor="end" style="fill:var(--sage)">objectif ${fmt1(p.vise)} kg</text>
-      ${pts.length > 1 ? `<path d="${area}" fill="var(--accent-soft)" opacity=".7"/><path d="${path}" fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="2 3" opacity=".6"/><path d="${tpath}" fill="none" stroke="var(--accent)" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
-      ${pts.map((w, i) => `<circle cx="${x(w.date)}" cy="${y(w.kg)}" r="${i === pts.length - 1 ? 4 : 2.6}" fill="var(--surface)" stroke="var(--muted)" stroke-width="1.5"/>`).join('')}
-      ${pts.length > 1 ? `<circle cx="${x(trw.date)}" cy="${y(trw.kg)}" r="5" fill="var(--accent)"/>` : ''}
+      ${pts.length > 1 ? `<path d="${area}" fill="var(--accent-soft)" opacity=".7"/><path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+      ${pts.map((w, i) => `<circle cx="${x(w.date)}" cy="${y(w.kg)}" r="${i === pts.length - 1 ? 5 : 3}" fill="${i === pts.length - 1 ? 'var(--accent)' : 'var(--surface)'}" stroke="var(--accent)" stroke-width="2"/>`).join('')}
       <text x="${L}" y="${H - 6}">${shortDate(pts[0].date)}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${shortDate(pts[pts.length - 1].date)}</text>
     </svg>
-    ${pts.length > 1 ? '<div class="legend"><span><i style="background:var(--accent)"></i>Tendance (lissée)</span><span><i style="background:var(--surface);border:1.5px solid var(--muted);border-radius:50%"></i>Pesées</span></div>' : ''}
-    <p class="note">Tendance : <b class="num">${fmt1(trw.kg)} kg</b>. ${trw.kg > p.vise ? 'Encore ' + fmt1(trw.kg - p.vise) + ' kg avant l\'objectif.' : 'Objectif atteint 🎉'} ${pjTxt}</p>
-    <p class="note">IMC ${fmt1(bmi(lw.kg, p.taille))}, repère indicatif. La balance varie d'un jour à l'autre (eau, sel) : la tendance montre la vraie évolution.</p>
+    <p class="note">${lw.kg > p.vise ? 'Encore ' + fmt1(lw.kg - p.vise) + ' kg avant l\'objectif' : 'Objectif atteint 🎉'} · IMC ${fmt1(bmi(lw.kg, p.taille))}, repère indicatif</p>
   </div>
+  ${ws.length > 1 ? `<div class="card sage"><p class="h3">📈 Ta tendance</p>
+    <p class="note" style="color:var(--text)">Tendance lissée : <b class="num">${fmt1(trw.kg)} kg</b>. ${pjTxt}</p>
+    <p class="note">La tendance gomme les petites variations d'une pesée à l'autre (eau, sel, repas de la veille) pour estimer ton rythme réel.</p></div>` : ''}
   <div class="card wlist" style="gap:0"><p class="h3" style="margin-bottom:6px">Historique</p>
     ${ws.slice().reverse().slice(0, 12).map((w, i, a) => { const prev = a[i + 1]; const d = prev ? w.kg - prev.kg : 0; return `<button class="line" data-act="delWeight" data-d="${w.date}"><span class="grow"><span class="n">${fmt1(w.kg)} kg</span><span class="q">${longDate(w.date)}</span></span><span class="kc num">${prev ? (d <= 0 ? '−' : '+') + fmt1(Math.abs(d)) : ''}</span></button>`; }).join('')}</div>`;
 }
@@ -410,6 +431,7 @@ function openAdd(meal) {
       <button class="way" data-w="photo"><em>📷</em>Photo</button>
       <button class="way" data-w="scan"><em>▦</em>Code-barres</button>
     </div>
+    <div class="field"><label class="label" for="q">Chercher un aliment (table Ciqual, marche hors ligne)</label><input class="input" id="q" placeholder="ex. yaourt, pâtes, pomme…" autocomplete="off"><div class="search-list" id="ql"></div></div>
     <div class="field"><span class="label">Mes favoris <button class="aide" data-aide aria-label="À quoi servent les favoris ?">?</button></span>
       <div class="bulle" id="bulle" ${D.reglages.aideVue ? 'hidden' : ''}><p><b>⭐ Favoris</b> : touche l'étoile ☆ à côté d'un aliment de ta journée pour l'enregistrer tel quel (nom, portion, calories). Il revient ici en un toucher : pas de ressaisie, pas de nouvelle estimation, donc toujours le même résultat. Tu les renommes ou les retires dans Profil.</p>
         <p><b>↺ Comme la veille</b> : recopie en un toucher ce que tu as noté hier pour ce même repas.</p><button class="link" data-compris>Compris</button></div>
@@ -417,7 +439,6 @@ function openAdd(meal) {
       ${favsTries().slice(0, 12).map(f => `<button class="chip fav" data-fav="${f.id}">⭐ ${esc(f.name)}</button>`).join('')}
       <button class="chip" data-same>↺ Comme la veille</button></div>
       ${D.favs.length ? '' : '<p class="note">Touche l\'étoile ☆ à côté d\'un aliment pour le retrouver ici.</p>'}</div>
-    <div class="field"><label class="label" for="q">Chercher un aliment (table Ciqual, marche hors ligne)</label><input class="input" id="q" placeholder="ex. yaourt, pâtes, pomme…" autocomplete="off"><div class="search-list" id="ql"></div></div>
 `, root => {
     bindMealSeg(root, st); bindAddTabs(root, st.meal);
     root.querySelectorAll('[data-w]').forEach(b => b.onclick = () => ({ write: () => openWrite(st.meal, false), voice: () => openWrite(st.meal, true), photo: () => openPhoto(st.meal), scan: () => openScan(st.meal) })[b.dataset.w]());
